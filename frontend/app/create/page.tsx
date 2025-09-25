@@ -54,7 +54,7 @@ export default function CreateGame() {
             placeholder="0"
             value={betAmount}
             onChange={(e) => {
-              setBetAmount(parseInt(e.target.value));
+              setBetAmount(Number(e.target.value));
             }}
           />
           <div
