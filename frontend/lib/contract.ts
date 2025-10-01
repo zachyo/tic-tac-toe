@@ -1,29 +1,14 @@
 import { STACKS_TESTNET } from "@stacks/network";
 import {
-  BooleanCV,
   cvToValue,
   fetchCallReadOnlyFunction,
-  ListCV,
-  OptionalCV,
-  PrincipalCV,
-  TupleCV,
+  principalCV,
   uintCV,
-  UIntCV,
+  type UIntCV,
 } from "@stacks/transactions";
 
-// REPLACE THESE WITH YOUR OWN
 const CONTRACT_ADDRESS = "ST17DW5M1YD988HNCMTGTFWV3SX0DWPGY5BJ4B13";
-// ST3P49R8XXQWG69S66MZASYPTTGNDKK0WW32RRJDN
-const CONTRACT_NAME = "tic-tac-toe";
-
-type GameCV = {
-  "player-one": PrincipalCV;
-  "player-two": OptionalCV<PrincipalCV>;
-  "is-player-one-turn": BooleanCV;
-  "bet-amount": UIntCV;
-  board: ListCV<UIntCV>;
-  winner: OptionalCV<PrincipalCV>;
-};
+const CONTRACT_NAME = "tic-tac-toe-v2";
 
 export type Game = {
   id: number;
@@ -33,6 +18,8 @@ export type Game = {
   "bet-amount": number;
   board: number[];
   winner: string | null;
+  "last-move-block": number;
+  "created-at": number;
 };
 
 export enum Move {
@@ -65,7 +52,7 @@ export async function getAllGames() {
   })) as UIntCV;
 
   // Convert the uintCV to a JS/TS number type
-  const latestGameId = parseInt(latestGameIdCV.value.toString());
+  const latestGameId = Number(latestGameIdCV.value);
 
   // Loop from 0 to latestGameId-1 and fetch the game details for each game
   const games: Game[] = [];
@@ -76,9 +63,9 @@ export async function getAllGames() {
   return games;
 }
 
-export async function getGame(gameId: number) {
+export async function getGame(gameId: number): Promise<Game | null> {
   // Use the get-game read only function to fetch the game details for the given gameId
-  const gameDetails = await fetchCallReadOnlyFunction({
+  const gameDetailsCV = await fetchCallReadOnlyFunction({
     contractAddress: CONTRACT_ADDRESS,
     contractName: CONTRACT_NAME,
     functionName: "get-game",
@@ -86,33 +73,78 @@ export async function getGame(gameId: number) {
     senderAddress: CONTRACT_ADDRESS,
     network: STACKS_TESTNET,
   });
+  console.log({gameDetailsCV})
 
-  const responseCV = gameDetails as OptionalCV<TupleCV<GameCV>>;
-  // If we get back a none, then the game does not exist and we return null
-  if (responseCV.type === "none") return null;
-  // If we get back a value that is not a tuple, something went wrong and we return null
-  if (responseCV.value.type !== "tuple") return null;
+  const gameDetails = cvToValue(gameDetailsCV);
+  if (!gameDetails) return null;
+  console.log(gameDetails)
 
-  // If we got back a GameCV tuple, we can convert it to a Game object
-  const gameCV = responseCV.value.value;
-
-  const game: Game = {
+  return {
     id: gameId,
-    "player-one": gameCV["player-one"].value,
-    "player-two":
-      gameCV["player-two"].type === "some"
-        ? gameCV["player-two"].value.value
-        : null,
-    "is-player-one-turn": cvToValue(gameCV["is-player-one-turn"]),
-    "bet-amount": parseInt(gameCV["bet-amount"].value.toString()),
-    board: gameCV["board"].value.map((cell) => parseInt(cell.value.toString())),
-    winner:
-      gameCV["winner"].type === "some" ? gameCV["winner"].value.value : null,
+    ...gameDetails,
+    "is-player-one-turn" : Boolean(gameDetails.value["is-player-one-turn"].value),
+    "player-one": gameDetails.value["player-one"].value,
+    "player-two": gameDetails.value["player-two"].value?.value || null,
+    "bet-amount": Number(gameDetails.value["bet-amount"].value),
+    winner: gameDetails.value.winner?.value,
+    "last-move-block": Number(gameDetails.value["last-move-block"].value),
+    "created-at": Number(gameDetails.value["created-at"].value),
+    board: gameDetails.value.board?.value?.map((m: any) => Number(m.value)),
   };
-  return game;
 }
 
+export type GlobalGame = {
+  "player-one": string;
+  "player-two": string;
+  winner: string | null;
+  "bet-amount": number;
+  "created-at": number;
+  "finished-at": number;
+};
 
+export async function getGlobalGame(gameId: number): Promise<GlobalGame | null> {
+  const globalGameCV = await fetchCallReadOnlyFunction({
+    contractAddress: CONTRACT_ADDRESS,
+    contractName: CONTRACT_NAME,
+    functionName: "get-global-game",
+    functionArgs: [uintCV(gameId)],
+    senderAddress: CONTRACT_ADDRESS,
+    network: STACKS_TESTNET,
+  });
+
+  const globalGame = cvToValue(globalGameCV);
+  console.log({globalGame})
+  if (!globalGame) return null;
+
+  return {
+    "player-one": globalGame.value["player-one"].value,
+    "player-two": globalGame.value["player-two"].value,
+    winner: globalGame.value.winner?.value?.value || null,
+    "bet-amount": Number(globalGame.value["bet-amount"].value),
+    "created-at": Number(globalGame.value["created-at"].value),
+    "finished-at": Number(globalGame.value["finished-at"].value),
+  };
+}
+
+export async function getAllGlobalGames(): Promise<GlobalGame[]> {
+  const latestGameIdCV = (await fetchCallReadOnlyFunction({
+    contractAddress: CONTRACT_ADDRESS,
+    contractName: CONTRACT_NAME,
+    functionName: "get-latest-game-id",
+    functionArgs: [],
+    senderAddress: CONTRACT_ADDRESS,
+    network: STACKS_TESTNET,
+  })) as UIntCV;
+
+  const latestGameId = Number(latestGameIdCV.value);
+
+  const globalGames: GlobalGame[] = [];
+  for (let i = 0; i < latestGameId; i++) {
+    const globalGame = await getGlobalGame(i);
+    if (globalGame) globalGames.push(globalGame);
+  }
+  return globalGames;
+}
 
 export async function createNewGame(
   betAmount: number,
@@ -149,4 +181,94 @@ export async function play(gameId: number, moveIndex: number, move: Move) {
   };
 
   return txOptions;
+}
+
+export async function cancelTimedOutGame(gameId: number) {
+  return {
+    contractAddress: CONTRACT_ADDRESS,
+    contractName: CONTRACT_NAME,
+    functionName: "cancel-timed-out-game",
+    functionArgs: [uintCV(gameId)],
+  };
+}
+
+export async function canCancelGame(gameId: number): Promise<boolean> {
+  const canCancelCV = await fetchCallReadOnlyFunction({
+    contractAddress: CONTRACT_ADDRESS,
+    contractName: CONTRACT_NAME,
+    functionName: "can-cancel-game",
+    functionArgs: [uintCV(gameId)],
+    senderAddress: CONTRACT_ADDRESS,
+    network: STACKS_TESTNET,
+  });
+  return cvToValue(canCancelCV);
+}
+
+export type PlayerStats = {
+  "total-games": number;
+  wins: number;
+  losses: number;
+  "total-staked": number;
+  "total-won": number;
+};
+
+export async function getPlayerStats(
+  player: string
+): Promise<PlayerStats | null> {
+  const statsCV = await fetchCallReadOnlyFunction({
+    contractAddress: CONTRACT_ADDRESS,
+    contractName: CONTRACT_NAME,
+    functionName: "get-player-statistics",
+    functionArgs: [principalCV(player)],
+    senderAddress: CONTRACT_ADDRESS,
+    network: STACKS_TESTNET,
+  });
+  console.log({statsCV})
+
+  const stats = cvToValue(statsCV);
+  console.log({stats})
+  if (!stats) return null;
+
+  return {
+    ...stats,    
+    "total-games": Number(stats.value["total-games"].value),
+    wins: Number(stats.value.wins.value),
+    losses: Number(stats.value.losses.value),
+    "total-staked": Number(stats.value["total-staked"].value),
+    "total-won": Number(stats.value["total-won"].value),
+  };
+}
+
+export type LeaderboardEntry = {
+  player: string;
+  "total-games": number;
+  wins: number;
+  losses: number;
+  "win-percentage": number;
+  "total-won": number;
+};
+
+export async function getLeaderboardEntry(
+  player: string
+): Promise<LeaderboardEntry | null> {
+  const entryCV = await fetchCallReadOnlyFunction({
+    contractAddress: CONTRACT_ADDRESS,
+    contractName: CONTRACT_NAME,
+    functionName: "get-leaderboard-entry",
+    functionArgs: [principalCV(player)],
+    senderAddress: CONTRACT_ADDRESS,
+    network: STACKS_TESTNET,
+  });
+  const entry = cvToValue(entryCV);
+
+  if (!entry) return null;
+  return {
+    ...entry,
+    "total-games": Number(entry.value["total-games"].value),
+    wins: Number(entry.value.wins.value),
+    losses: Number(entry.value.losses.value),
+    player: entry.value.player.value,
+    "win-percentage": Number(entry.value["win-percentage"].value),
+    "total-won": Number(entry.value["total-won"].value),
+  };
 }

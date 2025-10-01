@@ -12,6 +12,7 @@ export function GamesList({ games }: { games: Game[] }) {
 
   // User Games are games in which the user is a player
   // and a winner has not been decided yet
+  console.log({userData, games})
   const userGames = useMemo(() => {
     if (!userData) return [];
     const userAddress = userData.profile.stxAddress.testnet;
@@ -125,7 +126,7 @@ export function GamesList({ games }: { games: Game[] }) {
         )}
       </div>
 
-      <div>
+      <div className="hidden">
         <h2 className="text-2xl font-bold mb-4">Ended Games</h2>
         {endedGames.length === 0 ? (
           <div className="text-center py-12 border rounded-lg">

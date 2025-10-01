@@ -18,7 +18,7 @@ export function GameBoard({
   return (
     <div className="flex flex-col items-start gap-2">
       <div className="grid grid-cols-3 gap-2">
-        {board.map((cell, index) => (
+        {board?.map((cell, index) => (
           <div
             key={index}
             className={
