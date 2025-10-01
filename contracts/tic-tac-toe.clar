@@ -1,136 +1,209 @@
+;; Enhanced Tic Tac Toe Contract with Stats and Timeouts
+
 ;; The Game ID to use for the next game
 (define-data-var latest-game-id uint u0)
 
+;; Timeout duration in blocks (approximately 24 hours = 144 blocks assuming 10 min per block)
+(define-constant TIMEOUT_BLOCKS u144)
+
+;; Game data structure with timestamp
 (define-map games 
     uint ;; Key (Game ID)
     { ;; Value (Game Tuple)
         player-one: principal,
         player-two: (optional principal),
         is-player-one-turn: bool,
-
         bet-amount: uint,
         board: (list 9 uint),
-        
-        winner: (optional principal)
+        winner: (optional principal),
+        last-move-block: uint,
+        created-at: uint
     }
-)   
+)
+
+;; Player statistics
+(define-map player-stats
+    principal ;; Key (Player address)
+    { ;; Value (Stats tuple)
+        total-games: uint,
+        wins: uint,
+        losses: uint,
+        total-staked: uint,
+        total-won: uint
+    }
+)
+
+;; Global game history for leaderboard
+(define-map global-games
+    uint ;; Key (Game ID)
+    {
+        player-one: principal,
+        player-two: principal,
+        winner: (optional principal),
+        bet-amount: uint,
+        created-at: uint,
+        finished-at: uint
+    }
+)
+
+;; Helper function to get or create player stats
+(define-private (get-player-stats (player principal))
+    (default-to 
+        { total-games: u0, wins: u0, losses: u0, total-staked: u0, total-won: u0 }
+        (map-get? player-stats player)
+    )
+)
+
+;; Helper function to update player stats
+(define-private (update-player-stats (player principal) (is-winner bool) (bet-amount uint) (total-winnings uint))
+    (let (
+        (current-stats (get-player-stats player))
+        (new-stats (merge current-stats {
+            total-games: (+ (get total-games current-stats) u1),
+            wins: (if is-winner (+ (get wins current-stats) u1) (get wins current-stats)),
+            losses: (if is-winner (get losses current-stats) (+ (get losses current-stats) u1)),
+            total-staked: (+ (get total-staked current-stats) bet-amount),
+            total-won: (+ (get total-won current-stats) total-winnings)
+        }))
+    )
+    (map-set player-stats player new-stats)
+))
 
 (define-private (validate-move (board (list 9 uint)) (move-index uint) (move uint))
     (let (
         ;; Validate that the move is being played within range of the board
         (index-in-range (and (>= move-index u0) (< move-index u9)))
-
         ;; Validate that the move is either an X or an O
         (x-or-o (or (is-eq move u1) (is-eq move u2)))
-
         ;; Validate that the cell the move is being played on is currently empty
         (empty-spot (is-eq (unwrap! (element-at? board move-index) false) u0))
     )
-
     ;; All three conditions must be true for the move to be valid
     (and (is-eq index-in-range true) (is-eq x-or-o true) empty-spot)
 ))
 
-(define-constant THIS_CONTRACT (as-contract tx-sender)) ;; The address of this contract itself
-(define-constant ERR_MIN_BET_AMOUNT u100) ;; Error thrown when a player tries to create a game with a bet amount less than the minimum (0.0001 STX)
-(define-constant ERR_INVALID_MOVE u101) ;; Error thrown when a move is invalid, i.e. not within range of the board or not an X or an O
-(define-constant ERR_GAME_NOT_FOUND u102) ;; Error thrown when a game cannot be found given a Game ID, i.e. invalid Game ID
-(define-constant ERR_GAME_CANNOT_BE_JOINED u103) ;; Error thrown when a game cannot be joined, usually because it already has two players
-(define-constant ERR_NOT_YOUR_TURN u104) ;; Error thrown when a player tries to make a move when it is not their turn
+(define-constant THIS_CONTRACT (as-contract tx-sender))
+(define-constant ERR_MIN_BET_AMOUNT u100)
+(define-constant ERR_INVALID_MOVE u101)
+(define-constant ERR_GAME_NOT_FOUND u102)
+(define-constant ERR_GAME_CANNOT_BE_JOINED u103)
+(define-constant ERR_NOT_YOUR_TURN u104)
+(define-constant ERR_GAME_TIMED_OUT u105)
+(define-constant ERR_CANNOT_CANCEL_YET u106)
+(define-constant ERR_NOT_AUTHORIZED_TO_CANCEL u107)
 
 (define-public (create-game (bet-amount uint) (move-index uint) (move uint))
     (let (
-        ;; Get the Game ID to use for creation of this new game
         (game-id (var-get latest-game-id))
-        ;; The initial starting board for the game with all cells empty
         (starting-board (list u0 u0 u0 u0 u0 u0 u0 u0 u0))
-        ;; Updated board with the starting move played by the game creator (X)
         (game-board (unwrap! (replace-at? starting-board move-index move) (err ERR_INVALID_MOVE)))
-        ;; Create the game data tuple (player one address, bet amount, game board, and mark next turn to be player two's turn)
+        (current-block stacks-block-height)
         (game-data {
             player-one: contract-caller,
             player-two: none,
             is-player-one-turn: false,
             bet-amount: bet-amount,
             board: game-board,
-            winner: none
+            winner: none,
+            last-move-block: current-block,
+            created-at: current-block
         })
     )
 
-    ;; Ensure that user has put up a bet amount greater than the minimum
     (asserts! (> bet-amount u0) (err ERR_MIN_BET_AMOUNT))
-    ;; Ensure that the move being played is an `X`, not an `O`
     (asserts! (is-eq move u1) (err ERR_INVALID_MOVE))
-    ;; Ensure that the move meets validity requirements
     (asserts! (validate-move starting-board move-index move) (err ERR_INVALID_MOVE))
 
-    ;; Transfer the bet amount STX from user to this contract
     (try! (stx-transfer? bet-amount contract-caller THIS_CONTRACT))
-    ;; Update the games map with the new game data
     (map-set games game-id game-data)
-    ;; Increment the Game ID counter
     (var-set latest-game-id (+ game-id u1))
 
-    ;; Log the creation of the new game
     (print { action: "create-game", data: game-data})
-    ;; Return the Game ID of the new game
     (ok game-id)
 ))
 
 (define-public (join-game (game-id uint) (move-index uint) (move uint))
     (let (
-        ;; Load the game data for the game being joined, throw an error if Game ID is invalid
         (original-game-data (unwrap! (map-get? games game-id) (err ERR_GAME_NOT_FOUND)))
-        ;; Get the original board from the game data
         (original-board (get board original-game-data))
-
-        ;; Update the game board by placing the player's move at the specified index
         (game-board (unwrap! (replace-at? original-board move-index move) (err ERR_INVALID_MOVE)))
-        ;; Update the copy of the game data with the updated board and marking the next turn to be player two's turn
+        (current-block stacks-block-height)
         (game-data (merge original-game-data {
             board: game-board,
             player-two: (some contract-caller),
-            is-player-one-turn: true
+            is-player-one-turn: true,
+            last-move-block: current-block
         }))
     )
 
-    ;; Ensure that the game being joined is able to be joined
-    ;; i.e. player-two is currently empty
-    (asserts! (is-none (get player-two original-game-data)) (err ERR_GAME_CANNOT_BE_JOINED)) 
-    ;; Ensure that the move being played is an `O`, not an `X`
+    (asserts! (is-none (get player-two original-game-data)) (err ERR_GAME_CANNOT_BE_JOINED))
     (asserts! (is-eq move u2) (err ERR_INVALID_MOVE))
-    ;; Ensure that the move meets validity requirements
     (asserts! (validate-move original-board move-index move) (err ERR_INVALID_MOVE))
 
-    ;; Transfer the bet amount STX from user to this contract
     (try! (stx-transfer? (get bet-amount original-game-data) contract-caller THIS_CONTRACT))
-    ;; Update the games map with the new game data
     (map-set games game-id game-data)
 
-    ;; Log the joining of the game
     (print { action: "join-game", data: game-data})
-    ;; Return the Game ID of the game
     (ok game-id)
 ))
 
-;; Given a board and three cells to look at on the board
-;; Return true if all three are not empty and are the same value (all X or all O)
-;; Return false if any of the three is empty or a different value
-(define-private (is-line (board (list 9 uint)) (a uint) (b uint) (c uint)) 
+;; Check if a game has timed out
+(define-private (is-timed-out (last-move-block uint))
+    (>= (- stacks-block-height last-move-block) TIMEOUT_BLOCKS)
+)
+
+;; Cancel a timed-out game
+(define-public (cancel-timed-out-game (game-id uint))
     (let (
-        ;; Value of cell at index a
-        (a-val (unwrap! (element-at? board a) false))
-        ;; Value of cell at index b
-        (b-val (unwrap! (element-at? board b) false))
-        ;; Value of cell at index c
-        (c-val (unwrap! (element-at? board c) false))
+        (game-data (unwrap! (map-get? games game-id) (err ERR_GAME_NOT_FOUND)))
+        (player-one (get player-one game-data))
+        (player-two (get player-two game-data))
+        (bet-amount (get bet-amount game-data))
+        (is-player-one-turn (get is-player-one-turn game-data))
+        (waiting-player (if is-player-one-turn 
+                           (unwrap! player-two (err ERR_GAME_NOT_FOUND))
+                           player-one))
     )
 
-    ;; a-val must equal b-val and must also equal c-val while not being empty (non-zero)
+    ;; Ensure game has timed out
+    (asserts! (is-timed-out (get last-move-block game-data)) (err ERR_CANNOT_CANCEL_YET))
+    ;; Ensure caller is the waiting player
+    (asserts! (is-eq contract-caller waiting-player) (err ERR_NOT_AUTHORIZED_TO_CANCEL))
+    ;; Ensure game hasn't ended yet
+    (asserts! (is-none (get winner game-data)) (err ERR_INVALID_MOVE))
+    ;; Ensure both players have joined
+    (asserts! (is-some player-two) (err ERR_GAME_CANNOT_BE_JOINED))
+
+    ;; Return funds to both players
+    (try! (as-contract (stx-transfer? bet-amount tx-sender player-one)))
+    (try! (as-contract (stx-transfer? bet-amount tx-sender (unwrap! player-two (err ERR_GAME_NOT_FOUND)))))
+
+    ;; Update game to mark as cancelled (winner = none but remove from active games)
+    (map-delete games game-id)
+
+    ;; Record in global games as cancelled
+    (map-set global-games game-id {
+        player-one: player-one,
+        player-two: (unwrap! player-two (err ERR_GAME_NOT_FOUND)),
+        winner: none,
+        bet-amount: bet-amount,
+        created-at: (get created-at game-data),
+        finished-at: stacks-block-height
+    })
+
+    (print { action: "cancel-timed-out-game", game-id: game-id, cancelled-by: waiting-player })
+    (ok true)
+))
+
+(define-private (is-line (board (list 9 uint)) (a uint) (b uint) (c uint)) 
+    (let (
+        (a-val (unwrap! (element-at? board a) false))
+        (b-val (unwrap! (element-at? board b) false))
+        (c-val (unwrap! (element-at? board c) false))
+    )
     (and (is-eq a-val b-val) (is-eq a-val c-val) (not (is-eq a-val u0)))
 ))
 
-;; Given a board, return true if any possible three-in-a-row line has been completed
 (define-private (has-won (board (list 9 uint))) 
     (or
         (is-line board u0 u1 u2) ;; Row 1
@@ -144,56 +217,142 @@
     )
 )
 
+;; Check if board is full (draw condition)
+(define-private (is-board-full (board (list 9 uint)))
+    (is-eq (len (filter is-zero board)) u0)
+)
+
+(define-private (is-zero (n uint))
+    (is-eq n u0)
+)
+
 (define-public (play (game-id uint) (move-index uint) (move uint))
     (let (
-        ;; Load the game data for the game being joined, throw an error if Game ID is invalid
         (original-game-data (unwrap! (map-get? games game-id) (err ERR_GAME_NOT_FOUND)))
-        ;; Get the original board from the game data
         (original-board (get board original-game-data))
-
-        ;; Is it player one's turn?
         (is-player-one-turn (get is-player-one-turn original-game-data))
-        ;; Get the player whose turn it currently is based on the is-player-one-turn flag
-        (player-turn (if is-player-one-turn (get player-one original-game-data) (unwrap! (get player-two original-game-data) (err ERR_GAME_NOT_FOUND))))
-        ;; Get the expected move based on whose turn it is (X or O?)
+        (player-one (get player-one original-game-data))
+        (player-two (unwrap! (get player-two original-game-data) (err ERR_GAME_NOT_FOUND)))
+        (player-turn (if is-player-one-turn player-one player-two))
         (expected-move (if is-player-one-turn u1 u2))
-
-        ;; Update the game board by placing the player's move at the specified index
         (game-board (unwrap! (replace-at? original-board move-index move) (err ERR_INVALID_MOVE)))
-        ;; Check if the game has been won now with this modified board
         (is-now-winner (has-won game-board))
-        ;; Merge the game data with the updated board and marking the next turn to be player two's turn
-        ;; Also mark the winner if the game has been won
+        (is-draw (and (not is-now-winner) (is-board-full game-board)))
+        (current-block stacks-block-height)
+        (bet-amount (get bet-amount original-game-data))
+        (total-pot (* u2 bet-amount))
         (game-data (merge original-game-data {
             board: game-board,
             is-player-one-turn: (not is-player-one-turn),
-            winner: (if is-now-winner (some player-turn) none)
+            winner: (if is-now-winner (some player-turn) none),
+            last-move-block: current-block
         }))
     )
 
-    ;; Ensure that the function is being called by the player whose turn it is
     (asserts! (is-eq player-turn contract-caller) (err ERR_NOT_YOUR_TURN))
-    ;; Ensure that the move being played is the correct move based on the current turn (X or O)
     (asserts! (is-eq move expected-move) (err ERR_INVALID_MOVE))
-    ;; Ensure that the move meets validity requirements
     (asserts! (validate-move original-board move-index move) (err ERR_INVALID_MOVE))
 
-    ;; if the game has been won, transfer the (bet amount * 2 = both players bets) STX to the winner
-    (if is-now-winner (try! (as-contract (stx-transfer? (* u2 (get bet-amount game-data)) tx-sender player-turn))) false)
+    ;; Handle game completion
+    (if (or is-now-winner is-draw)
+        (begin
+            ;; Record in global games
+            (map-set global-games game-id {
+                player-one: player-one,
+                player-two: player-two,
+                winner: (if is-now-winner (some player-turn) none),
+                bet-amount: bet-amount,
+                created-at: (get created-at original-game-data),
+                finished-at: current-block
+            })
+            
+            (if is-now-winner
+                (begin
+                    ;; Winner takes all
+                    (try! (as-contract (stx-transfer? total-pot tx-sender player-turn)))
+                    ;; Update winner stats
+                    (update-player-stats player-turn true bet-amount total-pot)
+                    ;; Update loser stats
+                    (update-player-stats (if (is-eq player-turn player-one) player-two player-one) false bet-amount u0)
+                )
+                (begin
+                    ;; Draw: return bets to both players
+                    (try! (as-contract (stx-transfer? bet-amount tx-sender player-one)))
+                    (try! (as-contract (stx-transfer? bet-amount tx-sender player-two)))
+                    ;; Update both players' stats as losses (or you could track draws separately)
+                    (update-player-stats player-one false bet-amount bet-amount)
+                    (update-player-stats player-two false bet-amount bet-amount)
+                )
+            )
+            
+            ;; Remove from active games
+            (map-delete games game-id)
+        )
+        ;; Game continues
+        (map-set games game-id game-data)
+    )
 
-    ;; Update the games map with the new game data
-    (map-set games game-id game-data)
-
-    ;; Log the action of a move being made
     (print {action: "play", data: game-data})
-    ;; Return the Game ID of the game
     (ok game-id)
 ))
 
+;; Read-only functions
 (define-read-only (get-game (game-id uint))
     (map-get? games game-id)
 )
 
 (define-read-only (get-latest-game-id)
     (var-get latest-game-id)
+)
+
+(define-read-only (get-player-statistics (player principal))
+    (map-get? player-stats player)
+)
+
+(define-read-only (get-global-game (game-id uint))
+    (map-get? global-games game-id)
+)
+
+;; Calculate win percentage (returns percentage * 100 to avoid decimals)
+(define-read-only (get-win-percentage (player principal))
+    (let (
+        (stats (get-player-stats player))
+        (total-games (get total-games stats))
+        (wins (get wins stats))
+    )
+    (if (is-eq total-games u0)
+        u0
+        (/ (* wins u10000) total-games) ;; Returns percentage * 100 (e.g., 7500 = 75.00%)
+    )
+))
+
+;; Get leaderboard data for a player (only if they have wins)
+(define-read-only (get-leaderboard-entry (player principal))
+    (let (
+        (stats (get-player-stats player))
+        (win-pct (get-win-percentage player))
+    )
+    (if (> (get wins stats) u0)
+        (some {
+            player: player,
+            total-games: (get total-games stats),
+            wins: (get wins stats),
+            losses: (get losses stats),
+            win-percentage: win-pct,
+            total-won: (get total-won stats)
+        })
+        none
+    )
+))
+
+;; Check if a game can be cancelled due to timeout
+(define-read-only (can-cancel-game (game-id uint))
+    (match (map-get? games game-id)
+        game-data (and 
+            (is-timed-out (get last-move-block game-data))
+            (is-none (get winner game-data))
+            (is-some (get player-two game-data))
+        )
+        false
+    )
 )
