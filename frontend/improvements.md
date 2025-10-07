@@ -112,7 +112,7 @@ const canCancel = await callReadOnlyFunction({
 
 ### Game History
 - Show all completed games for a player
-- Include: Opponent, Result, Bet Amount, Date played
+- Include: Opponent, Result, Bet Amount, Date game was played
 
 ## Important Notes
 
