@@ -1,24 +1,55 @@
 "use client";
 
-import { Game, Move } from "@/lib/contract";
+import { canCancelGame, type Game, Move } from "@/lib/contract";
 import { GameBoard } from "./game-board";
-import { abbreviateAddress, explorerAddress, formatStx } from "@/lib/stx-utils";
+import {
+  abbreviateAddress,
+  explorerAddress,
+  formatStx,
+  getCurrentBlockHeight,
+} from "@/lib/stx-utils";
 import Link from "next/link";
 import { useStacks } from "@/hooks/use-stacks";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 interface PlayGameProps {
   game: Game;
 }
 
+const TIMEOUT_BLOCKS = 144;
+
 export function PlayGame({ game }: PlayGameProps) {
-  const { userData, handleJoinGame, handlePlayGame } = useStacks();
+  const { userData, handleJoinGame, handlePlayGame, handleCancelGame } =
+    useStacks();
 
   // Initial game board is the current `game.board` state
   const [board, setBoard] = useState(game.board);
+  const [canBeCancelled, setCanBeCancelled] = useState(false);
+  const [blocksUntilTimeout, setBlocksUntilTimeout] = useState(0);
 
   // cell where user played their move. -1 denotes no move has been played
   const [playedMoveIndex, setPlayedMoveIndex] = useState(-1);
+
+  useEffect(() => {
+    async function checkCancel() {
+      const canCancel = await canCancelGame(game.id);
+      setCanBeCancelled(canCancel);
+    }
+    if (game["player-two"] && !game.winner) {
+      checkCancel();
+    }
+
+    async function checkTimeout() {
+      const currentBlock = await getCurrentBlockHeight();
+      const blocksPassed = currentBlock - game["last-move-block"];
+      setBlocksUntilTimeout(Math.max(0, TIMEOUT_BLOCKS - blocksPassed));
+    }
+    if (game["player-two"] && !game.winner) {
+      checkTimeout();
+      const interval = setInterval(checkTimeout, 30000); // every 30 seconds
+      return () => clearInterval(interval);
+    }
+  }, [game]);
 
   // If user is not logged in, don't show anything
   if (!userData) return null;
@@ -57,6 +88,18 @@ export function PlayGame({ game }: PlayGameProps) {
           <span className="text-gray-500">Bet Amount: </span>
           <span>{formatStx(game["bet-amount"])} STX</span>
         </div>
+
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-gray-500">Created at block:</span>
+          <span>#{game["created-at"]}</span>
+        </div>
+
+        {game["player-two"] && !game.winner && (
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-gray-500">Timeout in:</span>
+            <span>{blocksUntilTimeout} blocks</span>
+          </div>
+        )}
 
         <div className="flex items-center justify-between gap-2">
           <span className="text-gray-500">Player One: </span>
@@ -117,7 +160,17 @@ export function PlayGame({ game }: PlayGameProps) {
       )}
 
       {isJoinedAlready && !isMyTurn && !isGameOver && (
-        <div className="text-gray-500">Waiting for opponent to play...</div>
+        <div className="text-center p-4 bg-gray-800 rounded-lg">
+          <div className="text-gray-400">Waiting for opponent to play...</div>
+          {canBeCancelled && (
+            <button
+              onClick={() => handleCancelGame(game.id)}
+              className="mt-4 bg-red-500 text-white px-4 py-2 rounded"
+            >
+              Cancel Timed-out Game
+            </button>
+          )}
+        </div>
       )}
     </div>
   );

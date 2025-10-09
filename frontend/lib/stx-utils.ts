@@ -1,9 +1,9 @@
 export function abbreviateAddress(address: string) {
-  return `${address.substring(0, 5)}...${address.substring(36)}`;
+  return `${address.substring(0, 5)}...${(address ?? "")?.substring(36)}`;
 }
 
 export function abbreviateTxnId(txnId: string) {
-  return `${txnId.substring(0, 5)}...${txnId.substring(62)}`;
+  return `${txnId.substring(0, 5)}...${(txnId ?? "")?.substring(62)}`;
 }
 
 export function explorerAddress(address: string) {
@@ -17,6 +17,14 @@ export async function getStxBalance(address: string) {
   const response = await fetch(url).then((res) => res.json());
   const balance = parseInt(response.balance);
   return balance;
+}
+
+export async function getCurrentBlockHeight() {
+  const baseUrl = "https://api.testnet.hiro.so";
+  const url = `${baseUrl}/v2/info`;
+
+  const response = await fetch(url).then((res) => res.json());
+  return response.stacks_tip_height as number;
 }
 
 // Convert a raw STX amount to a human readable format by respecting the 6 decimal places

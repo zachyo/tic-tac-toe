@@ -20,6 +20,14 @@ export function Navbar() {
         <Link href="/create" className="text-gray-300 hover:text-gray-50">
           Create Game
         </Link>
+        <Link href="/leaderboard" className="text-gray-300 hover:text-gray-50">
+          Leaderboard
+        </Link>
+        {userData && (
+          <Link href="/stats" className="text-gray-300 hover:text-gray-50">
+            My Stats
+          </Link>
+        )}
       </div>
 
       <div className="flex items-center gap-2">

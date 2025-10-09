@@ -1,4 +1,10 @@
-import { createNewGame, joinGame, Move, play } from "@/lib/contract";
+import {
+  createNewGame,
+  joinGame,
+  Move,
+  play,
+  cancelTimedOutGame,
+} from "@/lib/contract";
 import { getStxBalance } from "@/lib/stx-utils";
 import {
   AppConfig,
@@ -112,7 +118,29 @@ export function useStacks() {
         appDetails,
         onFinish: (data) => {
           console.log(data);
-          window.alert("Sent play game transaction");
+          window.alert("Sent play game transaction");          
+        },
+        postConditionMode: PostConditionMode.Allow,        
+      });
+    } catch (_err) {
+      const err = _err as Error;
+      console.error(err);
+      window.alert(err.message);
+    }
+  }
+
+  async function handleCancelGame(gameId: number) {
+    if (typeof window === "undefined") return;
+
+    try {
+      if (!userData) throw new Error("User not connected");
+      const txOptions = await cancelTimedOutGame(gameId);
+      await openContractCall({
+        ...txOptions,
+        appDetails,
+        onFinish: (data) => {
+          console.log(data);
+          window.alert("Sent cancel game transaction");
         },
         postConditionMode: PostConditionMode.Allow,
       });
@@ -123,34 +151,25 @@ export function useStacks() {
     }
   }
 
-  // useEffect(() => {
-  //   if (userSession.isSignInPending()) {
-  //     userSession.handlePendingSignIn().then((userData) => {
-  //       setUserData(userData);
-  //     });
-  //   } else if (userSession.isUserSignedIn()) {
-  //     setUserData(userSession.loadUserData());
-  //   }
-  // }, []);
   useEffect(() => {
-  try {
-    if (userSession.isSignInPending()) {
-      userSession.handlePendingSignIn().then((userData) => {
-        setUserData(userData);
-      });
-    } else if (userSession.isUserSignedIn()) {
-      setUserData(userSession.loadUserData());
+    try {
+      if (userSession.isSignInPending()) {
+        userSession.handlePendingSignIn().then((userData) => {
+          setUserData(userData);
+        });
+      } else if (userSession.isUserSignedIn()) {
+        setUserData(userSession.loadUserData());
+      }
+    } catch (error) {
+      // Clear corrupted session data and retry
+      console.warn("Clearing corrupted session data:", error);
+      userSession.signUserOut();
+      // Optionally retry after clearing
+      if (userSession.isUserSignedIn()) {
+        setUserData(userSession.loadUserData());
+      }
     }
-  } catch (error) {
-    // Clear corrupted session data and retry
-    console.warn('Clearing corrupted session data:', error);
-    userSession.signUserOut();
-    // Optionally retry after clearing
-    if (userSession.isUserSignedIn()) {
-      setUserData(userSession.loadUserData());
-    }
-  }
-}, []);
+  }, []);
 
   useEffect(() => {
     if (userData) {
@@ -169,5 +188,6 @@ export function useStacks() {
     handleCreateGame,
     handleJoinGame,
     handlePlayGame,
+    handleCancelGame,
   };
 }

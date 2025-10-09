@@ -63,7 +63,7 @@ plan:
     - id: 0
       transactions:
         - emulated-contract-publish:
-            contract-name: tic-tac-toe
+            contract-name: tic-tac-toe-v2
             emulated-sender: ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM
             path: contracts/tic-tac-toe.clar
             clarity-version: 3
